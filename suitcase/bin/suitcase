@@ -1,0 +1,295 @@
+#!/usr/bin/env python
+
+"""Suitcase's system command
+
+This command is called to carry out all packaging based on the user's
+configuration.
+
+Make sure it's got executable permissions and is in your CLI path
+
+"""
+
+import os
+import sys
+
+from optparse import make_option, OptionParser
+from glob import glob
+
+try:
+    import yaml
+except ImportError:
+    print "pyyaml not installed, see http://pyyaml.org/wiki/PyYAML"
+
+from suitcase.exceptions import (
+    SuitcaseException,
+    SuitcasePackagingError,
+    SuitcaseCommandError,
+    SuitcaseVcsError,
+    SuitcaseCopyError,
+    SuitcaseConfigurationError
+)
+from suitcase.utils.common import (
+    get_user_input,
+    get_dynamic_class_instance,
+    remove_leading_slash,
+    display_warning,
+)
+
+
+VERSION = 0.1
+DEBUG = False
+
+# Things to be excluded when copying files
+DEFAULT_BUILD_EXCLUSIONS = [
+    ".DS_Store",
+    "._*",
+    "*.pyc",
+    '*.swp',
+    ".svn",
+    ".bzr",
+    "debian.yml",
+    "suitcase.yml"
+]
+
+# Things to be excluded when walking directories
+DEFAULT_PATH_EXCLUSIONS = [".svn", ".bzr"]
+
+# list of required options
+REQUIRED_OPTIONS = ['package_format', "version_control"]
+
+PACKAGING_OPTIONS = (
+    make_option(
+        "-d",
+        "--directory",
+        action="store",
+        type="string",
+        dest="directory",
+        default='.',
+        help='Directory to start from. Defaults to current working directory. '\
+            'This is assumed to be the root of your branch.'
+    ),
+    make_option(
+        "-c",
+        "--config",
+        action="store",
+        type="string",
+        dest="configuration",
+        default=None,
+        help='Provides a location of a configuration YAML file. '\
+            '(Defaults to suitcase.yml within the root of your branch).'
+    ),
+    make_option(
+        "-q",
+        "--quiet",
+        action="store_true",
+        dest="quiet",
+        default=False,
+        help='suppress output'
+    ),
+    make_option(
+        '--no-clean',
+        action='store_true',
+        dest='no_clean',
+        default=False,
+        help='Tells suitcase to NOT clean up after itself by deleting the '\
+        'temp dir after building. Good for analysing where your package '\
+        'creation went wrong'
+    ),
+    make_option(
+        '--no-move',
+        action='store_true',
+        dest='no_move',
+        default=False,
+        help='Do NOT attempt to move package after building.'
+    ),
+    make_option(
+        '-y',
+        '--assume-yes',
+        action='store_true',
+        dest='assume_yes',
+        default=False,
+        help='Assume yes for all things that would otherwise be '\
+        'interactive'
+    ),
+    make_option(
+        '--force-build',
+        action='store_true',
+        dest='force_build',
+        default=False, help='Forces build even if package is already built'
+    ),
+    make_option(
+        '-l',
+        '--limit-from',
+        action="store",
+        type="string",
+        dest="limit_from",
+        default=0, help='Revision from which to build'
+    ),
+)
+
+def get_global_config(file_path):
+    """Reads the global config and checks for the required fields"""
+
+    config = yaml.load(open(file_path).read())
+
+    missing_options = []
+    for required in REQUIRED_OPTIONS:
+        if config.get(required) is None:
+            missing_options.append(required)
+
+    base_path = os.path.dirname(os.path.abspath(file_path))
+
+    if config.get("collections"):
+        collection_mapping = {}
+        for collection in config["collections"]:
+            if not config["collections"][collection].get("dirs"):
+                config["collections"][collection]["dirs"] = [base_path]
+
+            for dir_glob in config["collections"][collection]["dirs"]:
+                for filename in glob(os.path.join(base_path, dir_glob)):
+                    if os.path.isdir(filename):
+                        filename = remove_leading_slash(
+                            filename.replace(base_path,"")
+                        )
+                        collection_mapping[filename] = collection
+        config["collection_mapping"] = collection_mapping
+
+    if len(missing_options) > 0:
+        raise SuitcaseConfigurationError(
+            "The following option(s) are missing %s" %\
+                ', '.join(missing_options)
+        )
+
+    return config
+
+def suitcase():
+
+    """Carries out the package building process
+
+    options:            options from the command-line
+    args:               args passed to the suitcase command line
+    global_config:      the configuration options from the config file
+
+    package reads in all of the configuration and CLI options and then hands
+    off to the config defined packager class.
+
+    """
+
+    # parse the command-line options
+    parser = OptionParser(
+        "usage: %prog [options] <Package Directory 1>,"\
+            "<Package Directory 2>...<Package Directory n> etc",
+         option_list=PACKAGING_OPTIONS, version = "%%prog %s" % VERSION
+    )
+
+    (options, args) = parser.parse_args()
+
+    config_file = options.configuration or os.path.join(
+        options.directory, "suitcase.yml"
+    )
+
+    # integrate the options file
+    if os.path.isfile(config_file):
+        #  Set the base_path from the directory passed in (defaults to CWD)
+        base_path = os.path.realpath(options.directory)
+
+        if not os.path.isdir(base_path):
+            invalid_path = base_path
+            base_path = os.path.realpath('.')
+            display_warning(
+                "Suitcase Warning: %s is not a valid directory defaulting "\
+                "to %s" % (invalid_path, base_path)
+            )
+
+        # parse the config
+        global_config = get_global_config(config_file)
+
+        # Add the default build and path exclusions
+        global_config["default_build_exclusions"] = DEFAULT_BUILD_EXCLUSIONS
+        global_config["default_path_exclusions"] = DEFAULT_PATH_EXCLUSIONS
+
+        package_format = global_config['package_format']
+
+        # Instantiate the packer and bung it in the global config
+        package_class = 'suitcase.packing.%s' % package_format
+        packager_instance = get_dynamic_class_instance(
+            package_class,
+            package_format.capitalize(),
+            config = global_config
+        )
+    else:
+        raise SuitcaseConfigurationError(
+            "Required configuration file %s cannot be found" % config_file
+        )
+
+    # Passed in package search paths take precedence over config ones.
+    package_search_path = args
+
+    # Prompt to build all packages from base_path if no package_search_path
+    # is set and assume_yes is off
+    if not len(package_search_path):
+        if (not options.assume_yes and not options.quiet):
+            result = get_user_input(
+                'Suitcase Warning: All packages found '\
+                    'below %s will be built. Are you sure?' \
+                        % base_path, ['yes','no'], 'yes'
+            )
+            if result == 'no':
+                sys.exit(1)
+
+        package_search_path = [ base_path ]
+
+
+
+    # Check what packaging system we are using and raise Exception if it's
+    # not defined.
+    package_format = global_config.get('package_format')
+    if package_format is None:
+        raise SuitcaseException(
+            "Package format is not defined in the "\
+                "configuration %s" % config_file
+        )
+
+    # merge options and global_config together and then add any other stuff
+    # we want to send through
+    options = options.__dict__
+    global_config.update(options)
+    extra = {
+        "base_path": base_path or None,
+    }
+
+    global_config.update(extra)
+
+    if DEBUG:
+        print "package_search_path: %s" % package_search_path
+
+    # Loop around all of the paths passed in
+    for path in package_search_path:
+        if os.path.isdir(path):
+            try:
+                # hand off to the packaging function
+                packager_instance.pack(path)
+            except SuitcaseException, error:
+                print error
+        else:
+            display_warning("Suitcase Warning: Path not found %s" % path)
+
+if __name__ == '__main__':
+    try:
+        suitcase()
+    except (
+        SuitcaseException,
+        SuitcasePackagingError,
+        SuitcaseCommandError,
+        SuitcaseVcsError,
+        SuitcaseCopyError,
+        ), e:
+        print e
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.stderr.write("Suitcase Interupted")
+        print 
+        sys.exit(5)
+        
+    sys.exit(0)
+

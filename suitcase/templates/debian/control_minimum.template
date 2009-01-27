@@ -1,0 +1,9 @@
+Package: %(package)s
+Version: %(version)s
+Architecture: %(architecture)s
+Maintainer: %(maintainer)s
+Priority: optional
+Section: web
+Description: %(description)s
+Depends: %(depends)s
+
