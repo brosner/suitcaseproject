@@ -7,4 +7,4 @@ path_exclusions: ['tests']
 build_exclusions: ['debdiff']
 collections:
     default:   
-        maintainer: Alex Knowles <alex.knowles@thisisglobal.com>
+        maintainer: Name <name@example.com>
