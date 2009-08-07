@@ -1,1 +1,13 @@
+You can find the original code at "http://code.google.com/p/suitcase/" - This is my own experimental work.
+
+Suitcase was written by Stuart Colville and Alex Knowles. The code is released under a BSD license, and is © Global Radio 2008.
+
+Suitcase is an extensible and flexible code packaging system to build packages for deployment. It was primarily built for assisting with the deployment of web applications but as an app it really doesn’t care about what you are building.
+
+Suitcase is architected to be flexible so that it’s possible to extend it to suit your packaging requirement. It’s also designed to be package system and version control agnostic.
+
+Suitcase was initially designed to build Debian packages but the codebase is structured with the intention that should be possible to support any arbitrary packaging system as required. Patches to add additional functionality will be greatly welcomed.
+
+Suitcase depends on the user making use of version control in order to be able to determine package versions. This design decision was made because if you’re not using a VCS then you probably won’t need a packaging system. However, if required it’s technically possible that someone could create a replacement of the VCS backend with a system that tracks versions of files without a VCS.
+
 To install suitcase simply add it to your Python Path
